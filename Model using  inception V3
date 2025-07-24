@@ -1,0 +1,107 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import cv2
+from PIL import Image
+
+from keras.models import Model
+from keras.layers import Input, Dense, Dropout, GlobalAveragePooling2D
+from keras.applications.inception_v3 import InceptionV3, preprocess_input
+from keras.utils import to_categorical
+from keras.callbacks import EarlyStopping
+from sklearn.model_selection import train_test_split
+
+# Set seed for reproducibility
+np.random.seed(1000)
+
+# Image loading
+image_directory = '/content/drive/MyDrive/cellyeah/'
+SIZE = 128  # We'll resize to 128x128 for consistency, though InceptionV3 typically expects 299x299
+dataset = []
+label = []
+
+# Load Parasitized images
+parasitized_images = os.listdir(image_directory + 'Parasitized/')
+for image_name in parasitized_images:
+    if image_name.endswith('.png'):
+        image = cv2.imread(image_directory + 'Parasitized/' + image_name)
+        image = Image.fromarray(image, 'RGB').resize((SIZE, SIZE))
+        dataset.append(np.array(image))
+        label.append(0)
+
+# Load Uninfected images
+uninfected_images = os.listdir(image_directory + 'Uninfected/')
+for image_name in uninfected_images:
+    if image_name.endswith('.png'):
+        image = cv2.imread(image_directory + 'Uninfected/' + image_name)
+        image = Image.fromarray(image, 'RGB').resize((SIZE, SIZE))
+        dataset.append(np.array(image))
+        label.append(1)
+
+# Convert and preprocess
+dataset = np.array(dataset)
+dataset = preprocess_input(dataset)  # Specific to InceptionV3
+label = to_categorical(np.array(label))
+
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(dataset, label, test_size=0.2, random_state=0)
+
+# Load InceptionV3 base model
+base_model = InceptionV3(weights='imagenet', include_top=False, input_shape=(SIZE, SIZE, 3))
+base_model.trainable = False  # Freeze base
+
+# Add custom layers on top
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.5)(x)
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.3)(x)
+output = Dense(2, activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=output)
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+print(model.summary())
+
+# Early stopping
+early_stop = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+
+# Train the model
+history = model.fit(
+    X_train, y_train,
+    batch_size=64,
+    epochs=15,
+    validation_split=0.1,
+    shuffle=True,
+    verbose=1,
+    callbacks=[early_stop]
+)
+
+# Evaluate on test set
+test_loss, test_acc = model.evaluate(X_test, y_test)
+print("Test Accuracy: {:.2f}%".format(test_acc * 100))
+
+# Plot accuracy and loss
+f, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+t = f.suptitle('InceptionV3 Transfer Learning Performance', fontsize=12)
+f.subplots_adjust(top=0.85, wspace=0.3)
+
+epoch_list = list(range(1, len(history.history['accuracy']) + 1))
+ax1.plot(epoch_list, history.history['accuracy'], label='Train Accuracy')
+ax1.plot(epoch_list, history.history['val_accuracy'], label='Validation Accuracy')
+ax1.set_xticks(np.arange(1, len(epoch_list)+1, 2))
+ax1.set_ylabel('Accuracy')
+ax1.set_xlabel('Epoch')
+ax1.set_title('Accuracy')
+ax1.legend(loc='best')
+
+ax2.plot(epoch_list, history.history['loss'], label='Train Loss')
+ax2.plot(epoch_list, history.history['val_loss'], label='Validation Loss')
+ax2.set_xticks(np.arange(1, len(epoch_list)+1, 2))
+ax2.set_ylabel('Loss')
+ax2.set_xlabel('Epoch')
+ax2.set_title('Loss')
+ax2.legend(loc='best')
+
+# Save model
+model.save('malaria_inceptionv3.h5')
